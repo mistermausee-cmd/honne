@@ -2,22 +2,25 @@
 
 ## What this branch contains
 
-A modified `Assembly-CSharp.dll` that bypasses the gallery unlock-code dialog in
-*NTS Honey & Money*.
+A modified `Assembly-CSharp.dll` that bypasses the gallery unlock-code dialog
+*and* the secondary length check that gates `GalleryCanvas`'s auto-unlock
+routine in *NTS Honey & Money*.
 
 ## What was changed
 
-Exactly **2 bytes** in `Assembly-CSharp.dll`.
+Six bytes total in `Assembly-CSharp.dll` — three independent two-byte patches.
 
-| | |
-|-|-|
-| File offset | `0x4B4C` |
-| Original bytes | `03 02` |
-| Patched bytes | `17 2A` |
-| File size | unchanged (189440 bytes) |
+| Method (rid) | Purpose | File offset | Original | Patched |
+|-|-|-|-|-|
+| 320 | SHA-256 verifier called from `GalleryUnlockDialog` | `0x4B4C` | `03 02` | `17 2A` |
+| 322 | Length check called from `GalleryCanvas` (`input.Length == _reference`) | `0x4BF9` | `7E 13` | `17 2A` |
+| 324 | Hash-length sanity check (always true anyway, patched for safety) | `0x4C29` | `7E 13` | `17 2A` |
 
-Inside the assembly this is the body of MethodDef rid=320 (the SHA-256
-verifier called from `GalleryUnlockDialog`). The original IL was:
+`17 2A` is the IL pair `ldc.i4.1; ret` — each patched method now unconditionally
+returns `true`. File size is unchanged (189440 bytes) and no metadata or
+other methods are affected.
+
+The original method 320 IL was:
 
 ```
 ldarg.1
@@ -33,16 +36,33 @@ call     String.Equals
 ret
 ```
 
-After the patch the same method body starts with:
+After the patch all three method bodies begin with:
 
 ```
 ldc.i4.1               // push true
 ret                    // return
 ```
 
-The remaining 25 bytes of the original body are now unreachable dead code, so
-the fat method header (`code_size = 27`) does not need to change and no other
-metadata is affected.
+The remaining bytes of each original body are now unreachable dead code, so
+the method headers (`code_size`) do not need to change.
+
+### Why three patches?
+
+The verification of the entered code is split across two paths:
+
+1. `GalleryUnlockDialog.Submit` calls method 320 (SHA-256 hash compare). On
+   success it sets a flag on the `GalleryUnlockData` ScriptableObject and shows
+   the success dialog.
+2. The next time `GalleryCanvas` is shown, it sees the flag and *separately*
+   checks that the entered code is the right length (method 322) and that the
+   produced hash has the same length as the stored hash (method 324) before it
+   actually walks `UnlockedMedia` and flips every entry's `LockedState` to
+   "unlocked".
+
+Patching only method 320 makes the dialog say "success" but leaves the
+gallery still locked, because method 322 fails for any input whose length
+does not match `_reference`. Patching all three makes both paths accept any
+input.
 
 ## How to install
 
@@ -62,7 +82,8 @@ metadata is affected.
 2. Type **anything** (even a single letter) and submit.
 3. The game will accept the input, set the internal "gallery unlocked" flag,
    and the `GalleryCanvas` will run the unlock routine on its next refresh.
-4. All gallery items that already exist in your `UnlockedMedia` list will
+4. Close and re-open the gallery (or switch tabs) to trigger the refresh.
+5. All gallery items that already exist in your `UnlockedMedia` list will
    become viewable. Items belonging to chapters you have never played will
    still not appear, because they are added to `UnlockedMedia` only when the
    chapter runs. To populate them, also set
